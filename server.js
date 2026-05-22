@@ -1,77 +1,113 @@
 const express = require('express');
+const cors = require('cors');
 const app = express();
-const PORT = process.env.PORT || 10000;
 
-// Cấu hình để server đọc được dữ liệu từ ô nhập chữ (Form)
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// --- CẤU HÌNH MIDDLEWARE ---
+app.use(cors()); // Cho phép tất cả các nguồn (Web/ESP32) truy cập API không bị lỗi bảo mật
+app.use(express.json()); // Cho phép server đọc được dữ liệu JSON gửi lên
+app.use(express.urlencoded({ extended: true })); // Hỗ trợ đọc dữ liệu dạng form-urlencoded nếu cần
 
-// Biến lưu trữ nội dung chữ và link âm thanh hiện tại
-let currentText = "Xin chào bạn";
-let currentAudioUrl = "https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=Xin%20ch%C3%A0o%20b%E1%BA%A1n";
+// --- BIẾN TOÀN CỤC LƯU TRẠNG THÁI ÂM THANH ---
+// Biến này đóng vai trò "cầu nối" - Web gõ gì sẽ lưu vào đây, ESP32 sẽ lên đây để lấy về
+let currentAudioState = {
+    status: "success",
+    text: "Xin chào",
+    audioUrl: "https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=Xin%20chào"
+};
 
-// 1. Giao diện trang web chính (Hiện ô nhập chữ)
+// --- 1. ENDPOINT GIAO DIỆN WEB (Khi bạn truy cập thẳng vào link Render) ---
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
-        <html lang="vi">
+        <html>
         <head>
-            <meta charset="UTF-8">
+            <title>Chị Google điều khiển ESP32</title>
+            <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Chị Google Nói Hộ ESP32</title>
             <style>
-                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f3f0ff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-                .container { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 8px 24px rgba(111, 66, 193, 0.15); width: 100%; max-width: 400px; text-align: center; }
-                h2 { color: #6f42c1; margin-bottom: 5px; }
-                p { color: #666; font-size: 14px; margin-bottom: 20px; }
-                textarea { width: 100%; height: 100px; padding: 12px; border: 2px solid #e2d9f3; border-radius: 10px; resize: none; box-sizing: border-box; font-size: 16px; outline: none; transition: 0.3s; }
-                textarea:focus { border-color: #6f42c1; }
-                button { width: 100%; background: #6f42c1; color: white; border: none; padding: 14px; border-radius: 10px; font-size: 16px; cursor: pointer; margin-top: 15px; font-weight: bold; transition: 0.2s; }
-                button:hover { background: #5a32a3; }
-                .status-box { margin-top: 20px; padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #6f42c1; text-align: left; font-size: 14px; }
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f6f9; color: #333; }
+                .container { max-width: 50px0px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                h2 { color: #007bff; margin-bottom: 20px; }
+                input[type="text"] { width: 80%; padding: 12px; font-size: 16px; border: 2px solid #ddd; border-radius: 8px; outline: none; transition: 0.3s; }
+                input[type="text"]:focus { border-color: #007bff; }
+                button { padding: 12px 24px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 15px; font-weight: bold; transition: 0.2s; }
+                button:hover { background-color: #0056b3; }
+                .status-box { margin-top: 25px; padding: 10px; background: #e8f4fd; border-radius: 6px; color: #0056b3; font-weight: 500; min-height: 20px; }
             </style>
         </head>
         <body>
             <div class="container">
-                <h2>Chị Google Nói Hộ 🗣️</h2>
-                <p>Nhập văn bản dưới đây để gửi xuống loa ESP32</p>
-                
-                <form action="/send-text" method="POST">
-                    <textarea name="text" placeholder="Nhập câu bạn muốn chị Google đọc..."></textarea>
-                    <button type="submit">Gửi văn bản đi 🚀</button>
-                </form>
-
-                <div class="status-box">
-                    <strong>Nội dung hiện tại trên mạch:</strong> <br>
-                    <span style="color: #6f42c1;">"${currentText}"</span>
-                </div>
+                <h2>🎙️ NHẬP CHỮ ĐỂ PHÁT LOA ESP32 🎙️</h2>
+                <input type="text" id="textInput" placeholder="Nhập câu muốn loa phát tại đây...">
+                <br>
+                <button onclick="sendText()">Gửi câu thoại</button>
+                <div id="statusMessage" class="status-box">Hệ thống sẵn sàng...</div>
             </div>
+
+            <script>
+                async function sendText() {
+                    const textValue = document.getElementById('textInput').value.trim();
+                    if (!textValue) {
+                        alert('Bạn ơi, vui lòng nhập nội dung chữ đã nhé!');
+                        return;
+                    }
+                    
+                    const statusDiv = document.getElementById('statusMessage');
+                    statusDiv.innerText = '⏳ Đang gửi lên Server Render...';
+                    
+                    try {
+                        const response = await fetch('/api/send-text', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: textValue })
+                        });
+                        const result = await response.json();
+                        if (result.status === 'success') {
+                            statusDiv.innerText = '✅ Đã gửi thành công! ESP32 sẽ phát loa sau vài giây.';
+                            document.getElementById('textInput').value = ''; // Xóa chữ cũ sau khi gửi xong
+                        } else {
+                            statusDiv.innerText = '❌ Lỗi: ' + result.message;
+                        }
+                    } catch (err) {
+                        statusDiv.innerText = '❌ Không thể kết nối tới Server Backend!';
+                    }
+                }
+            </script>
         </body>
         </html>
     `);
 });
 
-// 2. Endpoint xử lý khi bạn bấm nút "Gửi văn bản đi"
-app.post('/send-text', (req, res) => {
-    const text = req.body.text;
-    if (text && text.trim() !== "") {
-        currentText = text.trim();
-        // Phép thuật ở đây: Tự động mã hóa chữ thành link MP3 của chị Google dịch
-        currentAudioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodeURIComponent(currentText)}`;
-        console.log(`[Chị Google] Đã cập nhật câu thoại mới: "${currentText}"`);
+// --- 2. API TIẾP NHẬN DỮ LIỆU TỪ WEB (POST /api/send-text) ---
+app.post('/api/send-text', (req, res) => {
+    const { text } = req.body;
+    if (!text) {
+        return res.status(400).json({ status: "error", message: "Không tìm thấy nội dung chữ hợp lệ." });
     }
-    res.redirect('/'); // Gửi xong thì tự load lại trang chính
-});
 
-// 3. API dành riêng cho ESP32 gọi lên lấy dữ liệu
-app.get('/api/status', (req, res) => {
-    res.json({
+    // Tiến hành mã hóa các ký tự tiếng Việt (ví dụ: "xin chào" -> "xin%20chào") để làm mượt link Google
+    const encodedText = encodeURIComponent(text);
+    const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
+
+    // Ghi đè trạng thái mới nhất vào biến toàn cục
+    currentAudioState = {
         status: "success",
-        text: currentText,
-        audioUrl: currentAudioUrl // Trả về link MP3 chị Google để ESP32 phát thẳng ra loa
-    });
+        text: text,
+        audioUrl: googleTtsUrl
+    };
+
+    console.log(`[Chị Google] Đã cập nhật câu thoại mới: "${text}"`);
+    res.json({ status: "success", message: "Đã cập nhật lên server thành công!", data: currentAudioState });
 });
 
-app.listen(PORT, () => {
+// --- 3. API ĐỂ ESP32 GỌI XUỐNG LẤY LINK ÂM THANH (GET /api/status) ---
+app.get('/api/status', (req, res) => {
+    // Trả về trực tiếp Object chứa audioUrl động thay vì chuỗi text kiểm tra cố định như trước
+    res.json(currentAudioState); 
+});
+
+// --- KHỞI CHẠY SERVER Chuẩn CẤU HÌNH RENDER ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server chị Google đang chạy mượt mà tại port ${PORT}`);
 });
